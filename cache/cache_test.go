@@ -253,3 +253,30 @@ func TestAddManyAndPrefetch(t *testing.T) {
 		t.Fatalf("Expected key6 to be in cache after prefetch")
 	}
 }
+
+func TestRemainingCapacity(t *testing.T) {
+	c := CreateCacheAndPebble(3)
+	defer c.Close()
+
+	if c.RemainingCapacity() != 3 {
+		t.Fatalf("Expected remaining capacity 3, got %d", c.RemainingCapacity())
+	}
+	keys := [][]byte{[]byte("key1"), []byte("key2")}
+	values := [][]byte{[]byte("value1"), []byte("value2")}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	if c.RemainingCapacity() != 1 {
+		t.Fatalf("Expected remaining capacity 1, got %d", c.RemainingCapacity())
+	}
+
+	c.Evict(keys[0])
+
+	if c.RemainingCapacity() != 2 {
+		t.Fatalf("Expected remaining capacity 2 after eviction, got %d", c.RemainingCapacity())
+	}
+}
