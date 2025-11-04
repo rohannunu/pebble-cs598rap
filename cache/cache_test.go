@@ -94,3 +94,162 @@ func TestCacheSetAndGetOverCapacityWriteToPebble(t *testing.T) {
 		t.Fatalf("Expected 1 item in pebble, got %d", pebbleCount)
 	}
 }
+
+func TestCacheEvictOldest(t *testing.T) {
+	c := CreateCacheAndPebble(3)
+	defer c.Close()
+
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	c.Evict(keys[0])
+
+	// key1 should be evicted
+	if c.Exists(keys[0]) {
+		t.Fatalf("Expected key1 to be evicted from cache")
+	}
+
+	// key2 and key3 should be present
+	if !c.Exists(keys[1]) {
+		t.Fatalf("Expected key2 to be in cache")
+	}
+	if !c.Exists(keys[2]) {
+		t.Fatalf("Expected key3 to be in cache")
+	}
+}
+
+func TestEvictAll(t *testing.T) {
+	c := CreateCacheAndPebble(3)
+	defer c.Close()
+
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	c.Evict(keys[0])
+	c.Evict(keys[1])
+	c.Evict(keys[2])
+
+	// All keys should be evicted
+	for i := 0; i < len(keys); i++ {
+		if c.Exists(keys[i]) {
+			t.Fatalf("Expected key%d to be evicted from cache", i+1)
+		}
+	}
+}
+
+func TestEvictAllAndGet(t *testing.T) {
+	c := CreateCacheAndPebble(3)
+	defer c.Close()
+
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	c.Evict(keys[0])
+	c.Evict(keys[1])
+	c.Evict(keys[2])
+
+	// Prefetch all keys back into cache
+	for i := 0; i < len(keys); i++ {
+		_, found, err := c.Get(keys[i])
+		if err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		if !found {
+			t.Fatalf("Expected key%d to be found after prefetch", i+1)
+		}
+	}
+}
+
+func TestEvictAllAndPrefetch(t *testing.T) {
+	c := CreateCacheAndPebble(3)
+	defer c.Close()
+
+	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
+	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	c.Evict(keys[0])
+	c.Evict(keys[1])
+	c.Evict(keys[2])
+
+	// Prefetch all keys back into cache
+	arr := make([][]byte, len(keys))
+	for i := 0; i < len(keys); i++ {
+		arr[i] = keys[i]
+	}
+
+	_, err := c.Prefetch(arr)
+	if err != nil {
+		t.Fatalf("Prefetch failed: %v", err)
+	}
+
+	// All keys should be back in cache
+	for i := 0; i < len(keys); i++ {
+		if !c.Exists(keys[i]) {
+			t.Fatalf("Expected key%d to be in cache after prefetch", i+1)
+		}
+	}
+}
+
+func TestAddManyAndPrefetch(t *testing.T) {
+	c := CreateCacheAndPebble(5)
+	defer c.Close()
+
+	keys := [][]byte{
+		[]byte("key1"), []byte("key2"), []byte("key3"),
+		[]byte("key4"), []byte("key5"), []byte("key6"),
+	}
+	values := [][]byte{
+		[]byte("value1"), []byte("value2"), []byte("value3"),
+		[]byte("value4"), []byte("value5"), []byte("value6"),
+	}
+	for i := 0; i < len(keys); i++ {
+		_, err := c.Set(keys[i], values[i], true)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+	}
+
+	// last key should have been written to pebble
+	if c.Exists(keys[5]) {
+		t.Fatalf("Expected key6 to be in pebble, not cache")
+	}
+
+	// evict the first key
+	c.Evict(keys[0])
+
+	// prefetch keys 6
+	prefetchKeys := [][]byte{keys[5]}
+	_, err := c.Prefetch(prefetchKeys)
+	if err != nil {
+		t.Fatalf("Prefetch failed: %v", err)
+	}
+
+	// 6 should be in cache
+	if !c.Exists(keys[5]) {
+		t.Fatalf("Expected key6 to be in cache after prefetch")
+	}
+}
