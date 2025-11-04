@@ -5,7 +5,7 @@ import (
 )
 
 func main() {
-	cache := cache.CreateCacheAndPebble(1024 * 1024 * 100)
+	cache := cache.CreateCacheAndPebble(10)
 	defer cache.Close()
 
 	// Example usage
