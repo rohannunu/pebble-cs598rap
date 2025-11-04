@@ -141,6 +141,20 @@ func (c *Cache) Get(key []byte) ([]byte, bool, error) {
 	return copied_val, true, nil
 }
 
+func (c *Cache) Exists(key []byte) bool {
+	k := makeKey(key)
+
+	c.MutexLock.RLock()
+
+	if _, ok := c.data[k]; ok {
+		// if this is a hit on the cache
+		c.MutexLock.RUnlock()
+		return true
+	}
+	c.MutexLock.RUnlock()
+	return false
+}
+
 func (c *Cache) Set(key, value []byte, addToCache bool) (bool, error) {
 	// returns bool: true if it was placed in the cache, false if it was placed into the db instead, error
 	k := makeKey(key)
