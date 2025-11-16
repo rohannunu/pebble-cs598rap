@@ -1,7 +1,7 @@
 package main
 
 import (
-	"example.com/pebble-app/cache"
+	"github.com/rohannunu/pebble-cs598rap/cache"
 )
 
 func main() {

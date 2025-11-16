@@ -3,7 +3,7 @@ package lrucache
 import (
 	"container/list"
 
-	"example.com/pebble-app/cache"
+	"github.com/rohannunu/pebble-cs598rap/cache"
 )
 
 type LRUCache struct {
