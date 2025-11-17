@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"sync/atomic"
 
-	"github.com/rohannunu/pebble-cs598rap/cache"
+	"example.com/pebble-app/cache"
 )
 
 type LRUStats struct {
@@ -34,8 +34,6 @@ func (s *LRUStats) Snapshot() LRUStats {
 		Evictions:  atomic.LoadUint64(&s.Evictions),
 	}
 }
-
-
 
 func (lru *LRUCache) Stats() LRUStats {
 	return lru.stats.Snapshot()
