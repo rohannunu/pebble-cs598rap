@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"sync/atomic"
 
-	"example.com/pebble-app/cache"
+	"github.com/rohannunu/pebble-cs598rap/cache"
 )
 
 type LRUStats struct {
