@@ -47,6 +47,7 @@ type DeToXCache struct {
 	agingFactor float64
 	depSets     map[string][]*DependencySet
 	txnHistory  []*Transaction
+	closed      bool
 }
 
 func NewDeToXCache(capacity int) *DeToXCache {
@@ -176,6 +177,9 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 				LastAccess:   atomic.AddUint64(&globalAccess, 1),
 				Transactions: make([]string, 0),
 			}
+		}
+		if !dc.closed {
+			dc.Prefetch(key)
 		}
 	}
 
@@ -334,6 +338,10 @@ func (dc *DeToXCache) Prefetch(sourceKey []byte) {
 }
 
 func (dc *DeToXCache) prefetchAsync(sourceKey []byte) {
+	if dc.closed {
+		return
+	}
+
 	k := string(sourceKey)
 	depSets, ok := dc.depSets[k]
 	if !ok || len(depSets) == 0 {
@@ -358,10 +366,13 @@ func (dc *DeToXCache) prefetchAsync(sourceKey []byte) {
 		prefetchKeys = append(prefetchKeys, []byte(key))
 	}
 
-	dc.cache.Prefetch(prefetchKeys)
+	if !dc.closed {
+		dc.cache.Prefetch(prefetchKeys)
+	}
 }
 
 func (dc *DeToXCache) Close() error {
+	dc.closed = true
 	return dc.cache.Close()
 }
 
