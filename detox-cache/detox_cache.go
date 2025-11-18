@@ -4,10 +4,41 @@ import (
 	"math"
 	"sync/atomic"
 
-	"example.com/pebble-app/cache"
+	"github.com/rohannunu/pebble-cs598rap/cache"
 )
 
 var globalAccess uint64
+
+// -------------------- Stats --------------------
+
+type DeToXStats struct {
+	Hits        uint64
+	Misses      uint64
+	Admissions  uint64
+	Evictions   uint64
+	Prefetches  uint64
+	Transactions uint64
+}
+
+func (s *DeToXStats) RecordHit()        { atomic.AddUint64(&s.Hits, 1) }
+func (s *DeToXStats) RecordMiss()       { atomic.AddUint64(&s.Misses, 1) }
+func (s *DeToXStats) RecordAdmission()  { atomic.AddUint64(&s.Admissions, 1) }
+func (s *DeToXStats) RecordEviction()   { atomic.AddUint64(&s.Evictions, 1) }
+func (s *DeToXStats) RecordPrefetch()   { atomic.AddUint64(&s.Prefetches, 1) }
+func (s *DeToXStats) RecordTxn()        { atomic.AddUint64(&s.Transactions, 1) }
+
+func (s *DeToXStats) Snapshot() DeToXStats {
+	return DeToXStats{
+		Hits:         atomic.LoadUint64(&s.Hits),
+		Misses:       atomic.LoadUint64(&s.Misses),
+		Admissions:   atomic.LoadUint64(&s.Admissions),
+		Evictions:    atomic.LoadUint64(&s.Evictions),
+		Prefetches:   atomic.LoadUint64(&s.Prefetches),
+		Transactions: atomic.LoadUint64(&s.Transactions),
+	}
+}
+
+// -------------------- Existing structs --------------------
 
 type Level struct {
 	Keys      []string
@@ -47,6 +78,8 @@ type DeToXCache struct {
 	agingFactor float64
 	depSets     map[string][]*DependencySet
 	txnHistory  []*Transaction
+
+	stats *DeToXStats
 }
 
 func NewDeToXCache(capacity int) *DeToXCache {
@@ -57,7 +90,13 @@ func NewDeToXCache(capacity int) *DeToXCache {
 		keys:       make([]string, 0, capacity),
 		depSets:    make(map[string][]*DependencySet),
 		txnHistory: make([]*Transaction, 0),
+		stats:      &DeToXStats{},
 	}
+}
+
+// Expose stats to wrappers (e.g., YCSB creator).
+func (dc *DeToXCache) Stats() DeToXStats {
+	return dc.stats.Snapshot()
 }
 
 func (dc *DeToXCache) scoreGroup(keys []string, lengthReduction int) float64 {
@@ -165,10 +204,14 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 	}
 
 	if found {
+		// Logical hit in DeToX if we already track metadata
 		if meta, ok := dc.metadata[k]; ok {
+			dc.stats.RecordHit()
 			meta.Frequency++
 			meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
 		} else {
+			// Value exists but DeToX has never seen this key => miss + admission candidate
+			dc.stats.RecordMiss()
 			dc.metadata[k] = &KeyMetadata{
 				TotalScore:   0,
 				Frequency:    1,
@@ -176,7 +219,12 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 				LastAccess:   atomic.AddUint64(&globalAccess, 1),
 				Transactions: make([]string, 0),
 			}
+			dc.keys = append(dc.keys, k)
+			dc.stats.RecordAdmission()
 		}
+	} else {
+		// not found at all
+		dc.stats.RecordMiss()
 	}
 
 	return val, found, nil
@@ -184,18 +232,22 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 
 func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 	if !toCache {
+		// direct write-through to Pebble
 		return dc.cache.Set(key, value, false)
 	}
 
 	k := string(key)
 
 	if meta, ok := dc.metadata[k]; ok {
+		// existing DeToX-tracked key: treat as a hit/update
+		dc.stats.RecordHit()
 		meta.Frequency++
 		meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
 		meta.Size = len(value)
 		return dc.cache.Set(key, value, true)
 	}
 
+	// new key: we may need to evict someone
 	if len(dc.metadata) >= dc.capacity {
 		if err := dc.evictVictim(); err != nil {
 			return false, err
@@ -216,6 +268,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 	}
 	dc.metadata[k] = meta
 	dc.keys = append(dc.keys, k)
+	dc.stats.RecordAdmission()
 
 	return true, nil
 }
@@ -246,6 +299,9 @@ func (dc *DeToXCache) evictVictim() error {
 	if err != nil {
 		return err
 	}
+
+	// eviction tracked here
+	dc.stats.RecordEviction()
 
 	dc.agingFactor = lowestScore
 
@@ -295,6 +351,9 @@ func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, 
 	}
 	dc.txnHistory = append(dc.txnHistory, txn)
 
+	// track a transaction-level counter
+	dc.stats.RecordTxn()
+
 	return results, nil
 }
 
@@ -330,6 +389,8 @@ func (dc *DeToXCache) recordDependency(sourceKey string, dependentKeys []string)
 }
 
 func (dc *DeToXCache) Prefetch(sourceKey []byte) {
+	// record one prefetch request (not per key) for now
+	dc.stats.RecordPrefetch()
 	go dc.prefetchAsync(sourceKey)
 }
 
@@ -364,4 +425,3 @@ func (dc *DeToXCache) prefetchAsync(sourceKey []byte) {
 func (dc *DeToXCache) Close() error {
 	return dc.cache.Close()
 }
-
