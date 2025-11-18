@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"example.com/pebble-app/cache"
+	"github.com/rohannunu/pebble-cs598rap/cache"
 )
 
 // -------------------- Globals & constants --------------------
@@ -33,6 +33,27 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+type DensityStats struct {
+	Hits       uint64 // front-cache (metadata) hits
+	Misses     uint64 // front-cache misses
+	Admissions uint64 // objects admitted into the front-cache
+	Evictions  uint64 // objects evicted from the front-cache
+}
+
+func (s *DensityStats) RecordHit()       { atomic.AddUint64(&s.Hits, 1) }
+func (s *DensityStats) RecordMiss()      { atomic.AddUint64(&s.Misses, 1) }
+func (s *DensityStats) RecordAdmission() { atomic.AddUint64(&s.Admissions, 1) }
+func (s *DensityStats) RecordEvict()     { atomic.AddUint64(&s.Evictions, 1) }
+
+func (s *DensityStats) Snapshot() DensityStats {
+	return DensityStats{
+		Hits:       atomic.LoadUint64(&s.Hits),
+		Misses:     atomic.LoadUint64(&s.Misses),
+		Admissions: atomic.LoadUint64(&s.Admissions),
+		Evictions:  atomic.LoadUint64(&s.Evictions),
+	}
+}
+
 type Entry struct {
 	Key        string
 	LastAccess uint64 // last access (globalAccess)
@@ -48,6 +69,8 @@ type DensityCache struct {
 
 	entries map[string]*Entry // key -> metadata entry
 	keys    []string          // for random sampling in eviction
+
+	stats *DensityStats
 }
 
 func NewDensityCache(capacity int) *DensityCache {
@@ -56,7 +79,12 @@ func NewDensityCache(capacity int) *DensityCache {
 		capacity: capacity,
 		entries:  make(map[string]*Entry),
 		keys:     make([]string, 0, capacity),
+		stats:    &DensityStats{},
 	}
+}
+
+func (dc *DensityCache) Stats() DensityStats {
+	return dc.stats.Snapshot()
 }
 
 func AgeBucket(age uint64) int {
@@ -142,6 +170,8 @@ func (dc *DensityCache) Get(key []byte) ([]byte, bool, error) {
 
 	if e, ok := dc.entries[k]; ok {
 		// Logical cache hit for this key: lifetime ends in a hit at age(now - LastAccess).
+		dc.stats.RecordHit()
+
 		recordLifetimeHit(e, now)
 
 		// Start a new lifetime
@@ -156,6 +186,7 @@ func (dc *DensityCache) Get(key []byte) ([]byte, bool, error) {
 	}
 
 	// Not in our metadata; ask the underlying cache (which may hit its in-memory map or Pebble).
+	dc.stats.RecordMiss()
 	val, found, err := dc.cache.Get(key)
 	if err != nil {
 		return nil, false, err
@@ -186,6 +217,7 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
 
 	// If already tracked, treat as a "hit" lifetime.
 	if e, ok := dc.entries[k]; ok {
+		dc.stats.RecordHit()
 		recordLifetimeHit(e, now)
 		e.LastAccess = now
 		e.Refs++
@@ -195,6 +227,7 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
 	}
 
 	// New key: ensure room in our front-cache metadata.
+	dc.stats.RecordMiss()
 	if len(dc.entries) >= dc.capacity {
 		if err := dc.evictOne(now); err != nil {
 			return false, err
@@ -216,6 +249,7 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
 	}
 	dc.entries[k] = e
 	dc.keys = append(dc.keys, k)
+	dc.stats.RecordAdmission()
 
 	return true, nil
 }
@@ -253,6 +287,7 @@ func (dc *DensityCache) admit(key, value []byte, now uint64) error {
 	}
 	dc.entries[k] = e
 	dc.keys = append(dc.keys, k)
+	dc.stats.RecordAdmission()
 	return nil
 }
 
@@ -308,6 +343,7 @@ func (dc *DensityCache) evictOne(now uint64) error {
 	dc.keys[bestIdx] = dc.keys[last]
 	dc.keys = dc.keys[:last]
 	delete(dc.entries, victimKey)
+	dc.stats.RecordEvict()
 
 	return nil
 }
