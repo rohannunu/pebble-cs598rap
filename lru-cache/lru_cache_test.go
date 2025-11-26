@@ -4,22 +4,25 @@ import (
 	"testing"
 )
 
+// global
+var async bool = true
+
 func TestLRUCache_SetGet(t *testing.T) {
 	lru := NewLRUCache(2)
 	defer lru.cache.Close()
 
 	// Set key-value pairs
-	_, err := lru.Set([]byte("key1"), []byte("value1"), true)
+	_, err := lru.Set([]byte("key1"), []byte("value1"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
-	_, err = lru.Set([]byte("key2"), []byte("value2"), true)
+	_, err = lru.Set([]byte("key2"), []byte("value2"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
 
 	// Get existing keys
-	value, found, err := lru.Get([]byte("key1"))
+	value, found, err := lru.Get([]byte("key1"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -27,7 +30,7 @@ func TestLRUCache_SetGet(t *testing.T) {
 		t.Fatalf("Expected value1, got %s", value)
 	}
 
-	value, found, err = lru.Get([]byte("key2"))
+	value, found, err = lru.Get([]byte("key2"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -35,13 +38,13 @@ func TestLRUCache_SetGet(t *testing.T) {
 		t.Fatalf("Expected value2, got %s", value)
 	}
 	// Add a new key to trigger eviction
-	_, err = lru.Set([]byte("key3"), []byte("value3"), true)
+	_, err = lru.Set([]byte("key3"), []byte("value3"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
 
 	// key2 should still be present
-	value, found, err = lru.Get([]byte("key2"))
+	value, found, err = lru.Get([]byte("key2"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -60,7 +63,7 @@ func TestLRUCache_SetGet(t *testing.T) {
 	}
 
 	// should be able to get key1 from pebble through the cache
-	value, found, err = lru.Get([]byte("key1"))
+	value, found, err = lru.Get([]byte("key1"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -75,17 +78,17 @@ func TestLRUCache_GetUpdate(t *testing.T) {
 	defer lru.cache.Close()
 
 	// Set key-value pairs
-	_, err := lru.Set([]byte("key1"), []byte("value1"), true)
+	_, err := lru.Set([]byte("key1"), []byte("value1"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
-	_, err = lru.Set([]byte("key2"), []byte("value2"), true)
+	_, err = lru.Set([]byte("key2"), []byte("value2"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
 
 	// Access key1 to make it most recently used
-	_, found, err := lru.Get([]byte("key1"))
+	_, found, err := lru.Get([]byte("key1"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -94,7 +97,7 @@ func TestLRUCache_GetUpdate(t *testing.T) {
 	}
 
 	// Add a new key to trigger eviction
-	_, err = lru.Set([]byte("key3"), []byte("value3"), true)
+	_, err = lru.Set([]byte("key3"), []byte("value3"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
@@ -118,7 +121,7 @@ func TestLRUCache_GetUpdate(t *testing.T) {
 	}
 
 	// key2 should be retrievable from pebble through the cache
-	value, found, err := lru.Get([]byte("key2"))
+	value, found, err := lru.Get([]byte("key2"), async)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -132,21 +135,21 @@ func TestLRUCache_EvictAll(t *testing.T) {
 	defer lru.cache.Close()
 
 	// Set key-value pairs
-	_, err := lru.Set([]byte("key1"), []byte("value1"), true)
+	_, err := lru.Set([]byte("key1"), []byte("value1"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
-	_, err = lru.Set([]byte("key2"), []byte("value2"), true)
+	_, err = lru.Set([]byte("key2"), []byte("value2"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
 
 	// push 2 more in to evict both
-	_, err = lru.Set([]byte("key3"), []byte("value3"), true)
+	_, err = lru.Set([]byte("key3"), []byte("value3"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
-	_, err = lru.Set([]byte("key4"), []byte("value4"), true)
+	_, err = lru.Set([]byte("key4"), []byte("value4"), true, async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}

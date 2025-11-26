@@ -2,6 +2,9 @@ package densitycache
 
 import "testing"
 
+// global
+var testing_async bool = true
+
 // Helper: check existence in the underlying in-memory cache.
 func existsInMemory(dc *DensityCache, key []byte) bool {
 	return dc.cache.Exists(key)
@@ -12,15 +15,15 @@ func TestDensityCache_SetGet(t *testing.T) {
 	defer dc.Close()
 
 	// Set key-value pairs
-	if _, err := dc.Set([]byte("key1"), []byte("value1"), true); err != nil {
+	if _, err := dc.Set([]byte("key1"), []byte("value1"), true, testing_async); err != nil {
 		t.Fatalf("Set key1 failed: %v", err)
 	}
-	if _, err := dc.Set([]byte("key2"), []byte("value2"), true); err != nil {
+	if _, err := dc.Set([]byte("key2"), []byte("value2"), true, testing_async); err != nil {
 		t.Fatalf("Set key2 failed: %v", err)
 	}
 
 	// Get existing keys
-	value, found, err := dc.Get([]byte("key1"))
+	value, found, err := dc.Get([]byte("key1"), testing_async)
 	if err != nil {
 		t.Fatalf("Get key1 failed: %v", err)
 	}
@@ -28,7 +31,7 @@ func TestDensityCache_SetGet(t *testing.T) {
 		t.Fatalf("Expected value1, got %s", value)
 	}
 
-	value, found, err = dc.Get([]byte("key2"))
+	value, found, err = dc.Get([]byte("key2"), testing_async)
 	if err != nil {
 		t.Fatalf("Get key2 failed: %v", err)
 	}
@@ -37,7 +40,7 @@ func TestDensityCache_SetGet(t *testing.T) {
 	}
 
 	// Add a new key to trigger eviction (capacity=2)
-	if _, err := dc.Set([]byte("key3"), []byte("value3"), true); err != nil {
+	if _, err := dc.Set([]byte("key3"), []byte("value3"), true, testing_async); err != nil {
 		t.Fatalf("Set key3 failed: %v", err)
 	}
 
@@ -65,7 +68,7 @@ func TestDensityCache_SetGet(t *testing.T) {
 	}
 
 	// Kept key should still be a cache hit or at least found
-	value, found, err = dc.Get([]byte(keptKey))
+	value, found, err = dc.Get([]byte(keptKey), testing_async)
 	if err != nil {
 		t.Fatalf("Get %s failed: %v", keptKey, err)
 	}
@@ -74,7 +77,7 @@ func TestDensityCache_SetGet(t *testing.T) {
 	}
 
 	// Evicted key should be fetched (likely from Pebble) and have the right value
-	value, found, err = dc.Get([]byte(evictedKey))
+	value, found, err = dc.Get([]byte(evictedKey), testing_async)
 	if err != nil {
 		t.Fatalf("Get %s failed: %v", evictedKey, err)
 	}
@@ -89,34 +92,34 @@ func TestDensityCache_GetUpdate(t *testing.T) {
 	defer dc.Close()
 
 	// Set key-value pairs
-	if _, err := dc.Set([]byte("key1"), []byte("value1"), true); err != nil {
+	if _, err := dc.Set([]byte("key1"), []byte("value1"), true, testing_async); err != nil {
 		t.Fatalf("Set key1 failed: %v", err)
 	}
-	if _, err := dc.Set([]byte("key2"), []byte("value2"), true); err != nil {
+	if _, err := dc.Set([]byte("key2"), []byte("value2"), true, testing_async); err != nil {
 		t.Fatalf("Set key2 failed: %v", err)
 	}
 
 	// Access key1 to exercise the "hit" path and update metadata
-	if _, found, err := dc.Get([]byte("key1")); err != nil {
+	if _, found, err := dc.Get([]byte("key1"), testing_async); err != nil {
 		t.Fatalf("Get key1 failed: %v", err)
 	} else if !found {
 		t.Fatalf("Expected to find key1")
 	}
 
 	// Update key1's value
-	if _, err := dc.Set([]byte("key1"), []byte("value1-updated"), true); err != nil {
+	if _, err := dc.Set([]byte("key1"), []byte("value1-updated"), true, testing_async); err != nil {
 		t.Fatalf("Update key1 failed: %v", err)
 	}
 
 	// Add a new key to trigger eviction
-	if _, err := dc.Set([]byte("key3"), []byte("value3"), true); err != nil {
+	if _, err := dc.Set([]byte("key3"), []byte("value3"), true, testing_async); err != nil {
 		t.Fatalf("Set key3 failed: %v", err)
 	}
 
 	// Regardless of which key gets evicted, all keys should be retrievable (from cache or Pebble)
 
 	// key1
-	value, found, err := dc.Get([]byte("key1"))
+	value, found, err := dc.Get([]byte("key1"), testing_async)
 	if err != nil {
 		t.Fatalf("Get key1 failed: %v", err)
 	}
@@ -125,7 +128,7 @@ func TestDensityCache_GetUpdate(t *testing.T) {
 	}
 
 	// key2
-	value, found, err = dc.Get([]byte("key2"))
+	value, found, err = dc.Get([]byte("key2"), testing_async)
 	if err != nil {
 		t.Fatalf("Get key2 failed: %v", err)
 	}
@@ -134,7 +137,7 @@ func TestDensityCache_GetUpdate(t *testing.T) {
 	}
 
 	// key3
-	value, found, err = dc.Get([]byte("key3"))
+	value, found, err = dc.Get([]byte("key3"), testing_async)
 	if err != nil {
 		t.Fatalf("Get key3 failed: %v", err)
 	}
@@ -148,16 +151,16 @@ func TestDensityCache_EvictAll(t *testing.T) {
 	defer dc.Close()
 
 	// Insert 4 keys with capacity=2 to force multiple evictions
-	if _, err := dc.Set([]byte("key1"), []byte("value1"), true); err != nil {
+	if _, err := dc.Set([]byte("key1"), []byte("value1"), true, testing_async); err != nil {
 		t.Fatalf("Set key1 failed: %v", err)
 	}
-	if _, err := dc.Set([]byte("key2"), []byte("value2"), true); err != nil {
+	if _, err := dc.Set([]byte("key2"), []byte("value2"), true, testing_async); err != nil {
 		t.Fatalf("Set key2 failed: %v", err)
 	}
-	if _, err := dc.Set([]byte("key3"), []byte("value3"), true); err != nil {
+	if _, err := dc.Set([]byte("key3"), []byte("value3"), true, testing_async); err != nil {
 		t.Fatalf("Set key3 failed: %v", err)
 	}
-	if _, err := dc.Set([]byte("key4"), []byte("value4"), true); err != nil {
+	if _, err := dc.Set([]byte("key4"), []byte("value4"), true, testing_async); err != nil {
 		t.Fatalf("Set key4 failed: %v", err)
 	}
 
@@ -182,7 +185,7 @@ func TestDensityCache_EvictAll(t *testing.T) {
 	}
 
 	for _, k := range keys {
-		val, found, err := dc.Get([]byte(k))
+		val, found, err := dc.Get([]byte(k), testing_async)
 		if err != nil {
 			t.Fatalf("Get %s failed: %v", k, err)
 		}

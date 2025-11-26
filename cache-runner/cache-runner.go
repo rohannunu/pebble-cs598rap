@@ -12,7 +12,7 @@ func main() {
 	key := []byte("exampleKey")
 	value := []byte("exampleValue")
 
-	success, err := cache.Set(key, value, true)
+	success, err := cache.Set(key, value, true, false)
 	if err != nil {
 		panic(err)
 	}
@@ -22,7 +22,7 @@ func main() {
 		println("Value set in database")
 	}
 
-	retrievedValue, found, err := cache.Get(key)
+	retrievedValue, found, err := cache.Get(key, false)
 
 	if err != nil {
 		panic(err)

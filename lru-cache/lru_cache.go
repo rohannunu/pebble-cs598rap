@@ -61,7 +61,7 @@ func (lru *LRUCache) updateOrder(key string) {
 	}
 }
 
-func (lru *LRUCache) Get(key []byte) ([]byte, bool, error) {
+func (lru *LRUCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	// Check if the key exists in the cache
 	exists, err := lru.Exists(key)
 	if err != nil {
@@ -90,7 +90,7 @@ func (lru *LRUCache) Get(key []byte) ([]byte, bool, error) {
 		if found {
 			// promote to cache
 			lru.stats.RecordPromote()
-			_, err := lru.Set(key, value, true)
+			_, err := lru.Set(key, value, true, async)
 			if err != nil {
 				return nil, false, err
 			}
@@ -100,10 +100,10 @@ func (lru *LRUCache) Get(key []byte) ([]byte, bool, error) {
 	return nil, false, nil
 }
 
-func (lru *LRUCache) Set(key []byte, value []byte, to_cache bool) (bool, error) {
+func (lru *LRUCache) Set(key []byte, value []byte, to_cache bool, async bool) (bool, error) {
 	// If the key already exists, update the value and move it to the front
 	if elem, ok := lru.elements[string(key)]; ok {
-		lru.cache.Set(key, value, true)
+		lru.cache.Set(key, value, true, async)
 		lru.order.MoveToFront(elem)
 		return true, nil
 	}
@@ -113,7 +113,7 @@ func (lru *LRUCache) Set(key []byte, value []byte, to_cache bool) (bool, error) 
 		backElem := lru.order.Back()
 		if backElem != nil {
 			lru.stats.RecordEvict()
-			_, err := lru.cache.Evict([]byte(backElem.Value.(string)))
+			_, err := lru.cache.Evict([]byte(backElem.Value.(string)), async)
 			if err != nil {
 				return false, err
 			}
@@ -122,7 +122,7 @@ func (lru *LRUCache) Set(key []byte, value []byte, to_cache bool) (bool, error) 
 		}
 	}
 	// Add the new key-value pair to the cache and mark it as most recently used
-	cached, err := lru.cache.Set(key, value, to_cache)
+	cached, err := lru.cache.Set(key, value, to_cache, async)
 	if err != nil {
 		return false, err
 	}

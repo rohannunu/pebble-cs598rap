@@ -164,7 +164,7 @@ func recomputeHD() {
 
 // Get looks up metadata in DensityCache, but always pulls bytes from dc.cache.
 // dc.cache internally decides whether the bytes come from its in-memory map or Pebble.
-func (dc *DensityCache) Get(key []byte) ([]byte, bool, error) {
+func (dc *DensityCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	now := atomic.AddUint64(&globalAccess, 1)
 	k := string(key)
 
@@ -196,7 +196,7 @@ func (dc *DensityCache) Get(key []byte) ([]byte, bool, error) {
 	}
 
 	// We got a value; decide whether to cache it in-memory by LHD policy.
-	if err := dc.admit(key, val, now); err != nil {
+	if err := dc.admit(key, val, now, async); err != nil {
 		// admission failure just means we skip caching; still return value
 		return val, true, nil
 	}
@@ -206,10 +206,10 @@ func (dc *DensityCache) Get(key []byte) ([]byte, bool, error) {
 
 // Set forwards to the underlying cache, and if toCache == true,
 // we also maintain LHD metadata and potentially evict something.
-func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
+func (dc *DensityCache) Set(key, value []byte, toCache bool, async bool) (bool, error) {
 	if !toCache {
 		// direct write to Pebble (no in-memory cache)
-		return dc.cache.Set(key, value, false)
+		return dc.cache.Set(key, value, false, async)
 	}
 
 	now := atomic.AddUint64(&globalAccess, 1)
@@ -222,20 +222,20 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
 		e.LastAccess = now
 		e.Refs++
 
-		cached, err := dc.cache.Set(key, value, true)
+		cached, err := dc.cache.Set(key, value, true, async)
 		return cached, err
 	}
 
 	// New key: ensure room in our front-cache metadata.
 	dc.stats.RecordMiss()
 	if len(dc.entries) >= dc.capacity {
-		if err := dc.evictOne(now); err != nil {
+		if err := dc.evictOne(now, async); err != nil {
 			return false, err
 		}
 	}
 
 	// Insert into underlying cache.
-	cached, err := dc.cache.Set(key, value, true)
+	cached, err := dc.cache.Set(key, value, true, async)
 	if err != nil || !cached {
 		// If underlying refused to cache (capacity?), we also skip metadata.
 		return cached, err
@@ -258,7 +258,7 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool) (bool, error) {
 // 1) evicting a victim (chosen by min HD) if needed,
 // 2) calling dc.cache.Set(key, value, true),
 // 3) installing metadata Entry.
-func (dc *DensityCache) admit(key, value []byte, now uint64) error {
+func (dc *DensityCache) admit(key, value []byte, now uint64, async bool) error {
 	k := string(key)
 
 	// Already tracked (rare in Get path)? Nothing to do.
@@ -268,13 +268,13 @@ func (dc *DensityCache) admit(key, value []byte, now uint64) error {
 
 	// Ensure room in metadata/front-cache.
 	if len(dc.entries) >= dc.capacity {
-		if err := dc.evictOne(now); err != nil {
+		if err := dc.evictOne(now, async); err != nil {
 			return err
 		}
 	}
 
 	// Cache bytes in underlying cache.
-	cached, err := dc.cache.Set(key, value, true)
+	cached, err := dc.cache.Set(key, value, true, async)
 	if err != nil || !cached {
 		return err
 	}
@@ -292,7 +292,7 @@ func (dc *DensityCache) admit(key, value []byte, now uint64) error {
 }
 
 // evictOne samples a few keys and evicts the one with minimum hit density.
-func (dc *DensityCache) evictOne(now uint64) error {
+func (dc *DensityCache) evictOne(now uint64, async bool) error {
 	n := len(dc.keys)
 	if n == 0 {
 		return nil
@@ -333,7 +333,7 @@ func (dc *DensityCache) evictOne(now uint64) error {
 	recordLifetimeEvict(e, now)
 
 	// Evict from underlying write-back cache (this writes key/value to Pebble).
-	_, err := dc.cache.Evict([]byte(victimKey))
+	_, err := dc.cache.Evict([]byte(victimKey), async)
 	if err != nil {
 		return err
 	}

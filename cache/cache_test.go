@@ -2,6 +2,9 @@ package cache
 
 import "testing"
 
+// global
+var testing_async bool = true
+
 func TestBasicCacheSetAndGet(t *testing.T) {
 	c := CreateCacheAndPebble(2)
 	defer c.Close()
@@ -10,7 +13,7 @@ func TestBasicCacheSetAndGet(t *testing.T) {
 	value := []byte("bar")
 
 	// Write to cache
-	ok, err := c.Set(key, value, true)
+	ok, err := c.Set(key, value, true, testing_async)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
@@ -40,7 +43,7 @@ func TestCacheSetAndGetOverCapacity(t *testing.T) {
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
@@ -70,7 +73,7 @@ func TestCacheSetAndGetOverCapacityWriteToPebble(t *testing.T) {
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
@@ -102,13 +105,13 @@ func TestCacheEvictOldest(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
 	}
 
-	c.Evict(keys[0])
+	c.Evict(keys[0], testing_async)
 
 	// key1 should be evicted
 	if c.Exists(keys[0]) {
@@ -131,15 +134,15 @@ func TestEvictAll(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
 	}
 
-	c.Evict(keys[0])
-	c.Evict(keys[1])
-	c.Evict(keys[2])
+	c.Evict(keys[0], testing_async)
+	c.Evict(keys[1], testing_async)
+	c.Evict(keys[2], testing_async)
 
 	// All keys should be evicted
 	for i := 0; i < len(keys); i++ {
@@ -156,15 +159,15 @@ func TestEvictAllAndGet(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
 	}
 
-	c.Evict(keys[0])
-	c.Evict(keys[1])
-	c.Evict(keys[2])
+	c.Evict(keys[0], testing_async)
+	c.Evict(keys[1], testing_async)
+	c.Evict(keys[2], testing_async)
 
 	// Prefetch all keys back into cache
 	for i := 0; i < len(keys); i++ {
@@ -185,15 +188,15 @@ func TestEvictAllAndPrefetch(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2"), []byte("key3")}
 	values := [][]byte{[]byte("value1"), []byte("value2"), []byte("value3")}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
 	}
 
-	c.Evict(keys[0])
-	c.Evict(keys[1])
-	c.Evict(keys[2])
+	c.Evict(keys[0], testing_async)
+	c.Evict(keys[1], testing_async)
+	c.Evict(keys[2], testing_async)
 
 	// Prefetch all keys back into cache
 	arr := make([][]byte, len(keys))
@@ -227,7 +230,7 @@ func TestAddManyAndPrefetch(t *testing.T) {
 		[]byte("value4"), []byte("value5"), []byte("value6"),
 	}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
@@ -239,7 +242,7 @@ func TestAddManyAndPrefetch(t *testing.T) {
 	}
 
 	// evict the first key
-	c.Evict(keys[0])
+	c.Evict(keys[0], testing_async)
 
 	// prefetch keys 6
 	prefetchKeys := [][]byte{keys[5]}
@@ -264,7 +267,7 @@ func TestRemainingCapacity(t *testing.T) {
 	keys := [][]byte{[]byte("key1"), []byte("key2")}
 	values := [][]byte{[]byte("value1"), []byte("value2")}
 	for i := 0; i < len(keys); i++ {
-		_, err := c.Set(keys[i], values[i], true)
+		_, err := c.Set(keys[i], values[i], true, testing_async)
 		if err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
@@ -274,7 +277,7 @@ func TestRemainingCapacity(t *testing.T) {
 		t.Fatalf("Expected remaining capacity 1, got %d", c.RemainingCapacity())
 	}
 
-	c.Evict(keys[0])
+	c.Evict(keys[0], testing_async)
 
 	if c.RemainingCapacity() != 2 {
 		t.Fatalf("Expected remaining capacity 2 after eviction, got %d", c.RemainingCapacity())

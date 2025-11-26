@@ -156,8 +156,16 @@ func (c *Cache) Exists(key []byte) bool {
 	return false
 }
 
-func (c *Cache) Set(key, value []byte, addToCache bool) (bool, error) {
+func (c *Cache) WriteToPebble(key, value []byte) (bool, error) {
+	if err := c.db.Set(key, value, pebble.Sync); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (c *Cache) Set(key, value []byte, addToCache bool, async bool) (bool, error) {
 	// returns bool: true if it was placed in the cache, false if it was placed into the db instead, error
+	// if async = true, do the write back to pebble asynchronously
 	k := makeKey(key)
 	v := append([]byte(nil), value...)
 
@@ -185,16 +193,21 @@ func (c *Cache) Set(key, value []byte, addToCache bool) (bool, error) {
 			return true, nil
 		} else {
 			// otherwise write to pebble
-			if err := c.db.Set(key, value, pebble.Sync); err != nil {
-				return false, err
+			if async {
+				go c.WriteToPebble(key, value)
+				return false, nil // we assume success for async writes
+			} else {
+				_, err := c.WriteToPebble(key, value)
+				if err != nil {
+					return false, err
+				}
 			}
-			return false, nil
 		}
 	}
-
+	return false, nil
 }
 
-func (c *Cache) Evict(key []byte) (bool, error) {
+func (c *Cache) Evict(key []byte, async bool) (bool, error) {
 	// The key parameter gets evicted from the cache, and written into pebble
 
 	// returns bool of if successfully evicted, error
@@ -215,6 +228,13 @@ func (c *Cache) Evict(key []byte) (bool, error) {
 
 	// write to pebble (incur latency cost)
 	copied_val := append([]byte(nil), e.value...)
+
+	if async {
+		c.stats.CacheEvict()
+		go c.WriteToPebble(key, copied_val)
+		return true, nil // we assume success for async writes
+	}
+
 	if err := c.db.Set([]byte(k), copied_val, pebble.Sync); err != nil {
 		return false, err
 	}
