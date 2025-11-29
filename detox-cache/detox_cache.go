@@ -235,8 +235,8 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 
 func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 	if !toCache {
-		// direct write-through to Pebble
-		return dc.cache.Set(key, value, false)
+		// direct write-through to Pebble (async for better performance)
+		return dc.cache.Set(key, value, false, true)
 	}
 
 	k := string(key)
@@ -247,7 +247,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 		meta.Frequency++
 		meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
 		meta.Size = len(value)
-		return dc.cache.Set(key, value, true)
+		return dc.cache.Set(key, value, true, false)
 	}
 
 	// new key: we may need to evict someone
@@ -257,7 +257,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 		}
 	}
 
-	cached, err := dc.cache.Set(key, value, true)
+	cached, err := dc.cache.Set(key, value, true, false)
 	if err != nil || !cached {
 		return cached, err
 	}
@@ -298,7 +298,8 @@ func (dc *DeToXCache) evictVictim() error {
 
 	victimKey := dc.keys[victimIdx]
 
-	_, err := dc.cache.Evict([]byte(victimKey))
+	// Use async eviction for better performance
+	_, err := dc.cache.Evict([]byte(victimKey), true)
 	if err != nil {
 		return err
 	}
