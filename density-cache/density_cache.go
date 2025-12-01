@@ -3,6 +3,7 @@ package densitycache
 import (
 	"math"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,7 @@ var lifetimes [NumRefClasses][NumAgeBuckets]uint64
 
 // precomputed hit density per (refClass, ageBucket)
 var hd [NumRefClasses][NumAgeBuckets]float64
+var hdMu sync.RWMutex
 
 var statsUpdates uint64
 
@@ -64,11 +66,17 @@ type Entry struct {
 // similar to your LRUCache: it decides when to Evict / Set(addToCache)
 // based on LHD hit-density estimates.
 type DensityCache struct {
-	cache    *cache.Cache // underlying write-back cache + Pebble
-	capacity int          // max number of keys we manage in-memory
+	cache    *cache.Cache      // underlying write-back cache + Pebble
+	capacity int               // max number of keys we manage in-memory
+	entries  map[string]*Entry // key -> metadata entry
+	keys     []string          // for random sampling in eviction
 
-	entries map[string]*Entry // key -> metadata entry
-	keys    []string          // for random sampling in eviction
+	// mutex protects `entries` and `keys` for concurrent access
+	Mutex sync.RWMutex
+
+	// per-cache RNG to avoid races on math/rand's global RNG
+	rng   *rand.Rand
+	rngMu sync.Mutex
 
 	stats *DensityStats
 }
@@ -80,6 +88,7 @@ func NewDensityCache(capacity int) *DensityCache {
 		entries:  make(map[string]*Entry),
 		keys:     make([]string, 0, capacity),
 		stats:    &DensityStats{},
+		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -129,6 +138,8 @@ func bumpStats() {
 // recomputeHD recomputes the per-(refClass, ageBucket) hit-density table.
 // HD(a,c) ≈ P(hit | age>=a,c) / E[remaining_life | age>=a,c], dropping size term.
 func recomputeHD() {
+	hdMu.Lock()
+	defer hdMu.Unlock()
 	for c := 0; c < NumRefClasses; c++ {
 		var hitsTail, lifeTail, lifeTimeTail uint64
 
@@ -167,17 +178,22 @@ func recomputeHD() {
 func (dc *DensityCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	now := atomic.AddUint64(&globalAccess, 1)
 	k := string(key)
+	// Check presence under read lock.
+	dc.Mutex.RLock()
+	e, ok := dc.entries[k]
+	dc.Mutex.RUnlock()
 
-	if e, ok := dc.entries[k]; ok {
-		// Logical cache hit for this key: lifetime ends in a hit at age(now - LastAccess).
+	if ok {
+		// Logical cache hit for this key: update stats and lifetime under write lock
+		// to avoid races when mutating the Entry.
+		dc.Mutex.Lock()
 		dc.stats.RecordHit()
-
 		recordLifetimeHit(e, now)
-
-		// Start a new lifetime
 		e.LastAccess = now
 		e.Refs++
+		dc.Mutex.Unlock()
 
+		// Fetch the actual value without holding the metadata lock.
 		val, found, err := dc.cache.Get(key)
 		if err != nil {
 			return nil, false, err
@@ -214,41 +230,56 @@ func (dc *DensityCache) Set(key, value []byte, toCache bool, async bool) (bool, 
 
 	now := atomic.AddUint64(&globalAccess, 1)
 	k := string(key)
-
 	// If already tracked, treat as a "hit" lifetime.
-	if e, ok := dc.entries[k]; ok {
-		dc.stats.RecordHit()
-		recordLifetimeHit(e, now)
-		e.LastAccess = now
-		e.Refs++
+	dc.Mutex.RLock()
+	e, ok := dc.entries[k]
+	dc.Mutex.RUnlock()
 
+	if ok {
+		// Update the underlying cache first (I/O outside locks), then update metadata.
 		cached, err := dc.cache.Set(key, value, true, async)
-		return cached, err
+		if err != nil {
+			return cached, err
+		}
+		if cached {
+			dc.Mutex.Lock()
+			dc.stats.RecordHit()
+			recordLifetimeHit(e, now)
+			e.LastAccess = now
+			e.Refs++
+			dc.Mutex.Unlock()
+		}
+		return cached, nil
 	}
 
 	// New key: ensure room in our front-cache metadata.
 	dc.stats.RecordMiss()
-	if len(dc.entries) >= dc.capacity {
+	dc.Mutex.RLock()
+	needEvict := len(dc.entries) >= dc.capacity
+	dc.Mutex.RUnlock()
+	if needEvict {
 		if err := dc.evictOne(now, async); err != nil {
 			return false, err
 		}
 	}
 
-	// Insert into underlying cache.
+	// Insert into underlying cache (I/O outside lock).
 	cached, err := dc.cache.Set(key, value, true, async)
 	if err != nil || !cached {
 		// If underlying refused to cache (capacity?), we also skip metadata.
 		return cached, err
 	}
 
-	// Track metadata for this key.
-	e := &Entry{
+	// Track metadata for this key under lock.
+	e = &Entry{
 		Key:        k,
 		LastAccess: now,
 		Refs:       1,
 	}
+	dc.Mutex.Lock()
 	dc.entries[k] = e
 	dc.keys = append(dc.keys, k)
+	dc.Mutex.Unlock()
 	dc.stats.RecordAdmission()
 
 	return true, nil
@@ -262,41 +293,61 @@ func (dc *DensityCache) admit(key, value []byte, now uint64, async bool) error {
 	k := string(key)
 
 	// Already tracked (rare in Get path)? Nothing to do.
-	if _, ok := dc.entries[k]; ok {
+	dc.Mutex.RLock()
+	_, ok := dc.entries[k]
+	dc.Mutex.RUnlock()
+	if ok {
 		return nil
 	}
 
 	// Ensure room in metadata/front-cache.
-	if len(dc.entries) >= dc.capacity {
+	dc.Mutex.RLock()
+	needEvict := len(dc.entries) >= dc.capacity
+	dc.Mutex.RUnlock()
+	if needEvict {
 		if err := dc.evictOne(now, async); err != nil {
 			return err
 		}
 	}
 
-	// Cache bytes in underlying cache.
+	// Cache bytes in underlying cache (I/O outside lock).
 	cached, err := dc.cache.Set(key, value, true, async)
 	if err != nil || !cached {
 		return err
 	}
 
-	// Track metadata for this key.
+	// Track metadata for this key under lock.
 	e := &Entry{
 		Key:        k,
 		LastAccess: now,
 		Refs:       1,
 	}
+	dc.Mutex.Lock()
 	dc.entries[k] = e
 	dc.keys = append(dc.keys, k)
+	dc.Mutex.Unlock()
 	dc.stats.RecordAdmission()
 	return nil
 }
 
 // evictOne samples a few keys and evicts the one with minimum hit density.
 func (dc *DensityCache) evictOne(now uint64, async bool) error {
+	// Take a snapshot of keys and entries under read lock to avoid holding
+	// the lock during sampling and I/O.
+	dc.Mutex.RLock()
 	n := len(dc.keys)
 	if n == 0 {
+		dc.Mutex.RUnlock()
 		return nil
 	}
+	keysCopy := make([]string, n)
+	copy(keysCopy, dc.keys)
+	// Copy entries by value so we don't hold pointers into live Entry structs.
+	entriesCopy := make(map[string]Entry, len(dc.entries))
+	for kk, vv := range dc.entries {
+		entriesCopy[kk] = *vv
+	}
+	dc.Mutex.RUnlock()
 
 	bestIdx := -1
 	bestScore := math.MaxFloat64
@@ -306,10 +357,20 @@ func (dc *DensityCache) evictOne(now uint64, async bool) error {
 		samples = n
 	}
 
+	// Read hd under its RWMutex to avoid races with recomputeHD.
+	// Use a per-cache RNG guarded by rngMu to avoid races on the
+	// package-level math/rand global state.
+	hdMu.RLock()
 	for i := 0; i < samples; i++ {
-		idx := rand.Intn(n)
-		k := dc.keys[idx]
-		e := dc.entries[k]
+		dc.rngMu.Lock()
+		idx := dc.rng.Intn(n)
+		dc.rngMu.Unlock()
+
+		k := keysCopy[idx]
+		e, ok := entriesCopy[k]
+		if !ok {
+			continue
+		}
 
 		age := now - e.LastAccess
 		a := AgeBucket(age)
@@ -321,16 +382,13 @@ func (dc *DensityCache) evictOne(now uint64, async bool) error {
 			bestIdx = idx
 		}
 	}
+	hdMu.RUnlock()
 
 	if bestIdx == -1 {
 		return nil
 	}
 
-	victimKey := dc.keys[bestIdx]
-	e := dc.entries[victimKey]
-
-	// Lifetime ended in eviction.
-	recordLifetimeEvict(e, now)
+	victimKey := keysCopy[bestIdx]
 
 	// Evict from underlying write-back cache (this writes key/value to Pebble).
 	_, err := dc.cache.Evict([]byte(victimKey), async)
@@ -338,12 +396,29 @@ func (dc *DensityCache) evictOne(now uint64, async bool) error {
 		return err
 	}
 
-	// Remove from metadata (swap-with-last for O(1) removal).
-	last := len(dc.keys) - 1
-	dc.keys[bestIdx] = dc.keys[last]
-	dc.keys = dc.keys[:last]
-	delete(dc.entries, victimKey)
-	dc.stats.RecordEvict()
+	// Safely record eviction lifetime and remove metadata under the metadata lock.
+	dc.Mutex.Lock()
+	if liveE, ok := dc.entries[victimKey]; ok {
+		// Use the live entry to compute lifetime (consistent values under lock).
+		recordLifetimeEvict(liveE, now)
+
+		// find index of victimKey in live keys
+		idx := -1
+		for i, kk := range dc.keys {
+			if kk == victimKey {
+				idx = i
+				break
+			}
+		}
+		if idx != -1 {
+			last := len(dc.keys) - 1
+			dc.keys[idx] = dc.keys[last]
+			dc.keys = dc.keys[:last]
+			delete(dc.entries, victimKey)
+			dc.stats.RecordEvict()
+		}
+	}
+	dc.Mutex.Unlock()
 
 	return nil
 }
