@@ -207,7 +207,7 @@ func (dc *DeToXCache) scoreTransaction(levels []Level) {
 	_ = criticalLength
 }
 
-func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
+func (dc *DeToXCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	k := string(key)
 
 	// Fetch the actual value without holding the metadata lock.
@@ -255,10 +255,10 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 	return val, found, nil
 }
 
-func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
+func (dc *DeToXCache) Set(key, value []byte, toCache bool, async bool) (bool, error) {
 	if !toCache {
-		// direct write-through to Pebble (async for better performance)
-		return dc.cache.Set(key, value, false, true)
+		// direct write-through to Pebble
+		return dc.cache.Set(key, value, false, async)
 	}
 
 	k := string(key)
@@ -270,7 +270,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 
 	if ok {
 		// Update the underlying cache first (I/O outside locks), then update metadata.
-		cached, err := dc.cache.Set(key, value, true, false)
+		cached, err := dc.cache.Set(key, value, true, async)
 		if err != nil {
 			return cached, err
 		}
@@ -291,13 +291,13 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 	dc.mu.RUnlock()
 
 	if needEvict {
-		if err := dc.evictVictim(); err != nil {
+		if err := dc.evictVictim(async); err != nil {
 			return false, err
 		}
 	}
 
 	// Insert into underlying cache (I/O outside lock).
-	cached, err := dc.cache.Set(key, value, true, false)
+	cached, err := dc.cache.Set(key, value, true, async)
 	if err != nil || !cached {
 		return cached, err
 	}
@@ -319,7 +319,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 	return true, nil
 }
 
-func (dc *DeToXCache) evictVictim() error {
+func (dc *DeToXCache) evictVictim(async bool) error {
 	// Take a snapshot of keys under read lock to avoid holding the lock during scoring.
 	dc.mu.RLock()
 	n := len(dc.keys)
@@ -348,8 +348,8 @@ func (dc *DeToXCache) evictVictim() error {
 
 	victimKey := keysCopy[victimIdx]
 
-	// Use async eviction for better performance (I/O outside lock).
-	_, err := dc.cache.Evict([]byte(victimKey), true)
+	// Evict from underlying cache (I/O outside lock).
+	_, err := dc.cache.Evict([]byte(victimKey), async)
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,7 @@ func (dc *DeToXCache) evictVictim() error {
 	return nil
 }
 
-func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, error) {
+func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte, async bool) (map[string][]byte, error) {
 	now := atomic.AddUint64(&globalAccess, 1)
 	results := make(map[string][]byte)
 	txnLevels := make([]Level, 0)
@@ -398,7 +398,7 @@ func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, 
 			k := string(key)
 			level.Keys = append(level.Keys, k)
 
-			val, found, err := dc.Get(key) // Get handles its own locking
+			val, found, err := dc.Get(key, async) // Get handles its own locking
 			if err != nil {
 				return nil, err
 			}
