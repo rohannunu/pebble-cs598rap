@@ -2,6 +2,7 @@ package detoxcache
 
 import (
 	"math"
+	"sync"
 	"sync/atomic"
 
 	"github.com/rohannunu/pebble-cs598rap/cache"
@@ -79,7 +80,10 @@ type DeToXCache struct {
 	depSets     map[string][]*DependencySet
 	txnHistory  []*Transaction
 	closed      bool
-	stats *DeToXStats
+	stats       *DeToXStats
+
+	// mutex protects `metadata`, `keys`, `depSets`, and `txnHistory` for concurrent access
+	mu sync.RWMutex
 }
 
 func NewDeToXCache(capacity int) *DeToXCache {
@@ -104,6 +108,7 @@ func (dc *DeToXCache) scoreGroup(keys []string, lengthReduction int) float64 {
 		return 0
 	}
 
+	dc.mu.RLock()
 	minFreq := uint64(math.MaxUint64)
 	totalSize := 0
 
@@ -118,6 +123,7 @@ func (dc *DeToXCache) scoreGroup(keys []string, lengthReduction int) float64 {
 			totalSize += 1
 		}
 	}
+	dc.mu.RUnlock()
 
 	if totalSize == 0 {
 		totalSize = 1
@@ -127,6 +133,9 @@ func (dc *DeToXCache) scoreGroup(keys []string, lengthReduction int) float64 {
 }
 
 func (dc *DeToXCache) updateKeyScore(key string, instanceScore float64) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
 	meta, ok := dc.metadata[key]
 	if !ok {
 		meta = &KeyMetadata{
@@ -145,6 +154,9 @@ func (dc *DeToXCache) updateKeyScore(key string, instanceScore float64) {
 }
 
 func (dc *DeToXCache) getKeyScore(key string) float64 {
+	dc.mu.RLock()
+	defer dc.mu.RUnlock()
+
 	meta, ok := dc.metadata[key]
 	if !ok {
 		return dc.agingFactor
@@ -198,19 +210,28 @@ func (dc *DeToXCache) scoreTransaction(levels []Level) {
 func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 	k := string(key)
 
+	// Fetch the actual value without holding the metadata lock.
 	val, found, err := dc.cache.Get(key)
 	if err != nil {
 		return nil, false, err
 	}
 
 	if found {
-		// Logical hit in DeToX if we already track metadata
-		if meta, ok := dc.metadata[k]; ok {
+		// Check presence under read lock first.
+		dc.mu.RLock()
+		meta, ok := dc.metadata[k]
+		dc.mu.RUnlock()
+
+		if ok {
+			// Logical hit in DeToX: update metadata under write lock.
+			dc.mu.Lock()
 			dc.stats.RecordHit()
 			meta.Frequency++
 			meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
+			dc.mu.Unlock()
 		} else {
 			// Value exists but DeToX has never seen this key => miss + admission candidate
+			dc.mu.Lock()
 			dc.stats.RecordMiss()
 			dc.metadata[k] = &KeyMetadata{
 				TotalScore:   0,
@@ -221,6 +242,7 @@ func (dc *DeToXCache) Get(key []byte) ([]byte, bool, error) {
 			}
 			dc.keys = append(dc.keys, k)
 			dc.stats.RecordAdmission()
+			dc.mu.Unlock()
 		}
 		if !dc.closed {
 			dc.Prefetch(key)
@@ -241,51 +263,79 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool) (bool, error) {
 
 	k := string(key)
 
-	if meta, ok := dc.metadata[k]; ok {
-		// existing DeToX-tracked key: treat as a hit/update
-		dc.stats.RecordHit()
-		meta.Frequency++
-		meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
-		meta.Size = len(value)
-		return dc.cache.Set(key, value, true, false)
+	// Check if already tracked under read lock.
+	dc.mu.RLock()
+	meta, ok := dc.metadata[k]
+	dc.mu.RUnlock()
+
+	if ok {
+		// Update the underlying cache first (I/O outside locks), then update metadata.
+		cached, err := dc.cache.Set(key, value, true, false)
+		if err != nil {
+			return cached, err
+		}
+		if cached {
+			dc.mu.Lock()
+			dc.stats.RecordHit()
+			meta.Frequency++
+			meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
+			meta.Size = len(value)
+			dc.mu.Unlock()
+		}
+		return cached, nil
 	}
 
-	// new key: we may need to evict someone
-	if len(dc.metadata) >= dc.capacity {
+	// New key: ensure room in our metadata.
+	dc.mu.RLock()
+	needEvict := len(dc.metadata) >= dc.capacity
+	dc.mu.RUnlock()
+
+	if needEvict {
 		if err := dc.evictVictim(); err != nil {
 			return false, err
 		}
 	}
 
+	// Insert into underlying cache (I/O outside lock).
 	cached, err := dc.cache.Set(key, value, true, false)
 	if err != nil || !cached {
 		return cached, err
 	}
 
-	meta := &KeyMetadata{
+	// Track metadata for this key under lock.
+	newMeta := &KeyMetadata{
 		TotalScore:   0,
 		Frequency:    1,
 		Size:         len(value),
 		LastAccess:   atomic.AddUint64(&globalAccess, 1),
 		Transactions: make([]string, 0),
 	}
-	dc.metadata[k] = meta
+	dc.mu.Lock()
+	dc.metadata[k] = newMeta
 	dc.keys = append(dc.keys, k)
+	dc.mu.Unlock()
 	dc.stats.RecordAdmission()
 
 	return true, nil
 }
 
 func (dc *DeToXCache) evictVictim() error {
-	if len(dc.keys) == 0 {
+	// Take a snapshot of keys under read lock to avoid holding the lock during scoring.
+	dc.mu.RLock()
+	n := len(dc.keys)
+	if n == 0 {
+		dc.mu.RUnlock()
 		return nil
 	}
+	keysCopy := make([]string, n)
+	copy(keysCopy, dc.keys)
+	dc.mu.RUnlock()
 
 	victimIdx := -1
 	lowestScore := math.MaxFloat64
 
-	for i, k := range dc.keys {
-		score := dc.getKeyScore(k)
+	for i, k := range keysCopy {
+		score := dc.getKeyScore(k) // getKeyScore handles its own locking
 		if score < lowestScore {
 			lowestScore = score
 			victimIdx = i
@@ -296,23 +346,39 @@ func (dc *DeToXCache) evictVictim() error {
 		return nil
 	}
 
-	victimKey := dc.keys[victimIdx]
+	victimKey := keysCopy[victimIdx]
 
-	// Use async eviction for better performance
+	// Use async eviction for better performance (I/O outside lock).
 	_, err := dc.cache.Evict([]byte(victimKey), true)
 	if err != nil {
 		return err
 	}
 
-	// eviction tracked here
-	dc.stats.RecordEviction()
+	// Safely remove metadata under lock.
+	dc.mu.Lock()
+	if _, ok := dc.metadata[victimKey]; ok {
+		// Update aging factor
+		dc.agingFactor = lowestScore
 
-	dc.agingFactor = lowestScore
+		// Find index of victimKey in live keys
+		idx := -1
+		for i, kk := range dc.keys {
+			if kk == victimKey {
+				idx = i
+				break
+			}
+		}
+		if idx != -1 {
+			last := len(dc.keys) - 1
+			dc.keys[idx] = dc.keys[last]
+			dc.keys = dc.keys[:last]
+		}
+		delete(dc.metadata, victimKey)
 
-	last := len(dc.keys) - 1
-	dc.keys[victimIdx] = dc.keys[last]
-	dc.keys = dc.keys[:last]
-	delete(dc.metadata, victimKey)
+		// Eviction tracked here
+		dc.stats.RecordEviction()
+	}
+	dc.mu.Unlock()
 
 	return nil
 }
@@ -332,7 +398,7 @@ func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, 
 			k := string(key)
 			level.Keys = append(level.Keys, k)
 
-			val, found, err := dc.Get(key)
+			val, found, err := dc.Get(key) // Get handles its own locking
 			if err != nil {
 				return nil, err
 			}
@@ -347,13 +413,17 @@ func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, 
 		}
 	}
 
-	dc.scoreTransaction(txnLevels)
+	dc.scoreTransaction(txnLevels) // scoreTransaction -> updateKeyScore handles locking
 
 	txn := &Transaction{
 		Levels:    txnLevels,
 		Timestamp: now,
 	}
+
+	// Append to transaction history under lock.
+	dc.mu.Lock()
 	dc.txnHistory = append(dc.txnHistory, txn)
+	dc.mu.Unlock()
 
 	// track a transaction-level counter
 	dc.stats.RecordTxn()
@@ -362,6 +432,9 @@ func (dc *DeToXCache) ExecuteTransaction(levels [][][]byte) (map[string][]byte, 
 }
 
 func (dc *DeToXCache) recordDependency(sourceKey string, dependentKeys []string) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
 	if _, ok := dc.depSets[sourceKey]; !ok {
 		dc.depSets[sourceKey] = make([]*DependencySet, 0)
 	}
@@ -404,26 +477,32 @@ func (dc *DeToXCache) prefetchAsync(sourceKey []byte) {
 	}
 
 	k := string(sourceKey)
+
+	// Read depSets under lock and make a copy of the most frequent set.
+	dc.mu.RLock()
 	depSets, ok := dc.depSets[k]
 	if !ok || len(depSets) == 0 {
+		dc.mu.RUnlock()
 		return
 	}
 
-	var mostFrequent *DependencySet
+	var mostFrequentKeys []string
 	maxFreq := uint64(0)
 	for _, depSet := range depSets {
 		if depSet.Frequency > maxFreq {
 			maxFreq = depSet.Frequency
-			mostFrequent = depSet
+			mostFrequentKeys = make([]string, len(depSet.Keys))
+			copy(mostFrequentKeys, depSet.Keys)
 		}
 	}
+	dc.mu.RUnlock()
 
-	if mostFrequent == nil {
+	if mostFrequentKeys == nil {
 		return
 	}
 
-	prefetchKeys := make([][]byte, 0)
-	for _, key := range mostFrequent.Keys {
+	prefetchKeys := make([][]byte, 0, len(mostFrequentKeys))
+	for _, key := range mostFrequentKeys {
 		prefetchKeys = append(prefetchKeys, []byte(key))
 	}
 
