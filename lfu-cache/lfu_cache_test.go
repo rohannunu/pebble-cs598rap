@@ -1,6 +1,10 @@
 package lfucache
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
 
 func TestLFUCache_SetGetAndEvictLeastFrequent(t *testing.T) {
 	lfu := NewLFUCache(2)
@@ -178,5 +182,65 @@ func TestLFUCache_StatsTracking(t *testing.T) {
 	}
 	if stats.Evictions != 1 {
 		t.Fatalf("expected 1 eviction, got %d", stats.Evictions)
+	}
+}
+
+func TestLFUCache_ConcurrentAccess(t *testing.T) {
+	lfu := NewLFUCache(64)
+	defer lfu.cache.Close()
+
+	const (
+		writers    = 8
+		readers    = 8
+		iterations = 200
+		keySpace   = 16
+	)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	writeFn := func(id int) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			key := []byte(fmt.Sprintf("k-%d", i%keySpace))
+			value := []byte(fmt.Sprintf("writer-%d-val-%d", id, i))
+			if _, err := lfu.Set(key, value, true); err != nil {
+				t.Errorf("writer %d set failed: %v", id, err)
+				return
+			}
+		}
+	}
+
+	readFn := func(id int) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			key := []byte(fmt.Sprintf("k-%d", i%keySpace))
+			if _, _, err := lfu.Get(key); err != nil {
+				t.Errorf("reader %d get failed: %v", id, err)
+				return
+			}
+		}
+	}
+
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go writeFn(i)
+	}
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go readFn(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	// Basic sanity: all keys should be accessible without errors after concurrent traffic.
+	for i := 0; i < keySpace; i++ {
+		key := []byte(fmt.Sprintf("k-%d", i))
+		if _, _, err := lfu.Get(key); err != nil {
+			t.Fatalf("final get failed for %q: %v", key, err)
+		}
 	}
 }

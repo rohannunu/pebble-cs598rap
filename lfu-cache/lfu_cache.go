@@ -2,6 +2,7 @@ package lfucache
 
 import (
 	"container/list"
+	"sync"
 	"sync/atomic"
 
 	"github.com/rohannunu/pebble-cs598rap/cache"
@@ -27,6 +28,7 @@ type LFUCache struct {
 	freqLists map[int]*list.List
 	minFreq   int
 	stats     *LFUStats
+	mu        sync.RWMutex
 }
 
 func (s *LFUStats) RecordHit()     { atomic.AddUint64(&s.Hits, 1) }
@@ -57,7 +59,9 @@ func (lfu *LFUCache) Stats() LFUStats {
 }
 
 func (lfu *LFUCache) Exists(key []byte) (bool, error) {
+	lfu.mu.RLock()
 	_, ok := lfu.elements[string(key)]
+	lfu.mu.RUnlock()
 	return ok, nil
 }
 
@@ -103,6 +107,7 @@ func (lfu *LFUCache) recalculateMinFreq() {
 
 // trackStats toggles whether this eviction should be reflected in the user visible stats.
 func (lfu *LFUCache) evictLFU(trackStats bool) error {
+	// lfu.mu must be held by the caller.
 	if len(lfu.elements) == 0 || lfu.capacity == 0 {
 		return nil
 	}
@@ -136,6 +141,9 @@ func (lfu *LFUCache) evictLFU(trackStats bool) error {
 }
 
 func (lfu *LFUCache) Get(key []byte) ([]byte, bool, error) {
+	lfu.mu.Lock()
+	defer lfu.mu.Unlock()
+
 	keyStr := string(key)
 	if entry, ok := lfu.elements[keyStr]; ok {
 		lfu.stats.RecordHit()
@@ -168,6 +176,9 @@ func (lfu *LFUCache) Get(key []byte) ([]byte, bool, error) {
 }
 
 func (lfu *LFUCache) Set(key, value []byte, toCache bool) (bool, error) {
+	lfu.mu.Lock()
+	defer lfu.mu.Unlock()
+
 	return lfu.setInternal(key, value, toCache, true)
 }
 
