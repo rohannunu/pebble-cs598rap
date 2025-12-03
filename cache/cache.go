@@ -61,6 +61,8 @@ type Cache struct {
 
 	stats *Statistics
 	db    *pebble.DB
+
+	asyncWG sync.WaitGroup
 }
 
 func makeKey(k []byte) string {
@@ -103,6 +105,7 @@ func CreateCacheAndPebble(cache_capacity int) *Cache {
 }
 
 func (c *Cache) Close() error {
+	c.asyncWG.Wait()
 	return c.db.Close()
 }
 
@@ -121,6 +124,7 @@ func (c *Cache) Get(key []byte) ([]byte, bool, error) {
 
 	c.MutexLock.RUnlock()
 	c.stats.CacheMiss()
+	c.asyncWG.Wait()
 
 	// gather the data from the database
 	value, closer, err := c.db.Get(key)
@@ -194,7 +198,13 @@ func (c *Cache) Set(key, value []byte, addToCache bool, async bool) (bool, error
 		} else {
 			// otherwise write to pebble
 			if async {
-				go c.WriteToPebble(key, value)
+				kcopy := append([]byte(nil), key...)
+				vcopy := append([]byte(nil), value...)
+				c.asyncWG.Add(1)
+				go func() {
+					defer c.asyncWG.Done()
+					_, _ = c.WriteToPebble(kcopy, vcopy)
+				}()
 				return false, nil // we assume success for async writes
 			} else {
 				_, err := c.WriteToPebble(key, value)
@@ -231,7 +241,13 @@ func (c *Cache) Evict(key []byte, async bool) (bool, error) {
 
 	if async {
 		c.stats.CacheEvict()
-		go c.WriteToPebble(key, copied_val)
+		kcopy := append([]byte(nil), key...)
+		valCopy := append([]byte(nil), copied_val...)
+		c.asyncWG.Add(1)
+		go func() {
+			defer c.asyncWG.Done()
+			_, _ = c.WriteToPebble(kcopy, valCopy)
+		}()
 		return true, nil // we assume success for async writes
 	}
 
