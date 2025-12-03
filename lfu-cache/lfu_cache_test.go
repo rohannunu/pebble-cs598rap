@@ -6,24 +6,26 @@ import (
 	"testing"
 )
 
+var async bool = true
+
 func TestLFUCache_SetGetAndEvictLeastFrequent(t *testing.T) {
 	lfu := NewLFUCache(2)
 	defer lfu.cache.Close()
 
-	if _, err := lfu.Set([]byte("key1"), []byte("value1"), true); err != nil {
+	if _, err := lfu.Set([]byte("key1"), []byte("value1"), true, async); err != nil {
 		t.Fatalf("Set key1 failed: %v", err)
 	}
-	if _, err := lfu.Set([]byte("key2"), []byte("value2"), true); err != nil {
+	if _, err := lfu.Set([]byte("key2"), []byte("value2"), true, async); err != nil {
 		t.Fatalf("Set key2 failed: %v", err)
 	}
 
 	// Touch key1 so it becomes more frequent than key2.
-	if _, found, err := lfu.Get([]byte("key1")); err != nil || !found {
+	if _, found, err := lfu.Get([]byte("key1"), async); err != nil || !found {
 		t.Fatalf("Get key1 failed, found=%v err=%v", found, err)
 	}
 
 	// Adding key3 should evict key2 (least frequent).
-	if _, err := lfu.Set([]byte("key3"), []byte("value3"), true); err != nil {
+	if _, err := lfu.Set([]byte("key3"), []byte("value3"), true, async); err != nil {
 		t.Fatalf("Set key3 failed: %v", err)
 	}
 
@@ -52,7 +54,7 @@ func TestLFUCache_SetGetAndEvictLeastFrequent(t *testing.T) {
 	}
 
 	// key2 should still be retrievable from Pebble and reinserted.
-	val, ok, err := lfu.Get([]byte("key2"))
+	val, ok, err := lfu.Get([]byte("key2"), async)
 	if err != nil {
 		t.Fatalf("Get key2 failed: %v", err)
 	}
@@ -65,15 +67,15 @@ func TestLFUCache_EvictOldestOnFrequencyTie(t *testing.T) {
 	lfu := NewLFUCache(2)
 	defer lfu.cache.Close()
 
-	if _, err := lfu.Set([]byte("k1"), []byte("value1"), true); err != nil {
+	if _, err := lfu.Set([]byte("k1"), []byte("value1"), true, async); err != nil {
 		t.Fatalf("Set k1 failed: %v", err)
 	}
-	if _, err := lfu.Set([]byte("k2"), []byte("value2"), true); err != nil {
+	if _, err := lfu.Set([]byte("k2"), []byte("value2"), true, async); err != nil {
 		t.Fatalf("Set k2 failed: %v", err)
 	}
 
 	// Both frequencies equal; inserting k3 should evict the least recently used (k1).
-	if _, err := lfu.Set([]byte("k3"), []byte("value3"), true); err != nil {
+	if _, err := lfu.Set([]byte("k3"), []byte("value3"), true, async); err != nil {
 		t.Fatalf("Set k3 failed: %v", err)
 	}
 
@@ -106,10 +108,10 @@ func TestLFUCache_PromoteAfterMiss(t *testing.T) {
 	lfu := NewLFUCache(1)
 	defer lfu.cache.Close()
 
-	if _, err := lfu.Set([]byte("a"), []byte("valueA"), true); err != nil {
+	if _, err := lfu.Set([]byte("a"), []byte("valueA"), true, async); err != nil {
 		t.Fatalf("Set a failed: %v", err)
 	}
-	if _, err := lfu.Set([]byte("b"), []byte("valueB"), true); err != nil {
+	if _, err := lfu.Set([]byte("b"), []byte("valueB"), true, async); err != nil {
 		t.Fatalf("Set b failed: %v", err)
 	}
 
@@ -123,7 +125,7 @@ func TestLFUCache_PromoteAfterMiss(t *testing.T) {
 	}
 
 	// Fetching "a" should bring it back and evict "b".
-	val, ok, err := lfu.Get([]byte("a"))
+	val, ok, err := lfu.Get([]byte("a"), async)
 	if err != nil {
 		t.Fatalf("Get a failed: %v", err)
 	}
@@ -144,29 +146,29 @@ func TestLFUCache_StatsTracking(t *testing.T) {
 	lfu := NewLFUCache(1)
 	defer lfu.cache.Close()
 
-	if _, err := lfu.Set([]byte("x"), []byte("valueX"), true); err != nil {
+	if _, err := lfu.Set([]byte("x"), []byte("valueX"), true, async); err != nil {
 		t.Fatalf("Set x failed: %v", err)
 	}
 
 	// Hit.
-	if _, ok, err := lfu.Get([]byte("x")); err != nil || !ok {
+	if _, ok, err := lfu.Get([]byte("x"), async); err != nil || !ok {
 		t.Fatalf("Get x failed: %v %v", err, ok)
 	}
 
 	// Miss on unknown key.
-	if _, ok, err := lfu.Get([]byte("unknown")); err != nil {
+	if _, ok, err := lfu.Get([]byte("unknown"), async); err != nil {
 		t.Fatalf("Get unknown failed: %v", err)
 	} else if ok {
 		t.Fatalf("Expected unknown key to miss")
 	}
 
 	// Insert y to evict x.
-	if _, err := lfu.Set([]byte("y"), []byte("valueY"), true); err != nil {
+	if _, err := lfu.Set([]byte("y"), []byte("valueY"), true, async); err != nil {
 		t.Fatalf("Set y failed: %v", err)
 	}
 
 	// Access x again -> miss + promotion.
-	if _, ok, err := lfu.Get([]byte("x")); err != nil || !ok {
+	if _, ok, err := lfu.Get([]byte("x"), async); err != nil || !ok {
 		t.Fatalf("Get x after eviction failed: %v %v", err, ok)
 	}
 
@@ -205,7 +207,7 @@ func TestLFUCache_ConcurrentAccess(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			key := []byte(fmt.Sprintf("k-%d", i%keySpace))
 			value := []byte(fmt.Sprintf("writer-%d-val-%d", id, i))
-			if _, err := lfu.Set(key, value, true); err != nil {
+			if _, err := lfu.Set(key, value, true, async); err != nil {
 				t.Errorf("writer %d set failed: %v", id, err)
 				return
 			}
@@ -217,7 +219,7 @@ func TestLFUCache_ConcurrentAccess(t *testing.T) {
 		<-start
 		for i := 0; i < iterations; i++ {
 			key := []byte(fmt.Sprintf("k-%d", i%keySpace))
-			if _, _, err := lfu.Get(key); err != nil {
+			if _, _, err := lfu.Get(key, async); err != nil {
 				t.Errorf("reader %d get failed: %v", id, err)
 				return
 			}
@@ -239,7 +241,7 @@ func TestLFUCache_ConcurrentAccess(t *testing.T) {
 	// Basic sanity: all keys should be accessible without errors after concurrent traffic.
 	for i := 0; i < keySpace; i++ {
 		key := []byte(fmt.Sprintf("k-%d", i))
-		if _, _, err := lfu.Get(key); err != nil {
+		if _, _, err := lfu.Get(key, async); err != nil {
 			t.Fatalf("final get failed for %q: %v", key, err)
 		}
 	}

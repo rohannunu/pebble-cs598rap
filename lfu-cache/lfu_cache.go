@@ -106,7 +106,7 @@ func (lfu *LFUCache) recalculateMinFreq() {
 }
 
 // trackStats toggles whether this eviction should be reflected in the user visible stats.
-func (lfu *LFUCache) evictLFU(trackStats bool) error {
+func (lfu *LFUCache) evictLFU(trackStats bool, async bool) error {
 	// lfu.mu must be held by the caller.
 	if len(lfu.elements) == 0 || lfu.capacity == 0 {
 		return nil
@@ -136,11 +136,11 @@ func (lfu *LFUCache) evictLFU(trackStats bool) error {
 	if trackStats {
 		lfu.stats.RecordEvict()
 	}
-	_, err := lfu.cache.Evict([]byte(entry.key))
+	_, err := lfu.cache.Evict([]byte(entry.key), async)
 	return err
 }
 
-func (lfu *LFUCache) Get(key []byte) ([]byte, bool, error) {
+func (lfu *LFUCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	lfu.mu.Lock()
 	defer lfu.mu.Unlock()
 
@@ -165,7 +165,7 @@ func (lfu *LFUCache) Get(key []byte) ([]byte, bool, error) {
 	}
 	if found {
 		lfu.stats.RecordPromote()
-		_, err := lfu.setInternal(key, value, true, false)
+		_, err := lfu.setInternal(key, value, true, false, async)
 		if err != nil {
 			return nil, false, err
 		}
@@ -175,17 +175,17 @@ func (lfu *LFUCache) Get(key []byte) ([]byte, bool, error) {
 	return nil, false, nil
 }
 
-func (lfu *LFUCache) Set(key, value []byte, toCache bool) (bool, error) {
+func (lfu *LFUCache) Set(key, value []byte, toCache bool, async bool) (bool, error) {
 	lfu.mu.Lock()
 	defer lfu.mu.Unlock()
 
-	return lfu.setInternal(key, value, toCache, true)
+	return lfu.setInternal(key, value, toCache, true, async)
 }
 
-func (lfu *LFUCache) setInternal(key, value []byte, toCache bool, trackEviction bool) (bool, error) {
+func (lfu *LFUCache) setInternal(key, value []byte, toCache bool, trackEviction bool, async bool) (bool, error) {
 	keyStr := string(key)
 	if entry, ok := lfu.elements[keyStr]; ok {
-		_, err := lfu.cache.Set(key, value, true)
+		_, err := lfu.cache.Set(key, value, true, async)
 		if err != nil {
 			return false, err
 		}
@@ -194,16 +194,16 @@ func (lfu *LFUCache) setInternal(key, value []byte, toCache bool, trackEviction 
 	}
 
 	if !toCache || lfu.capacity == 0 {
-		return lfu.cache.Set(key, value, false)
+		return lfu.cache.Set(key, value, false, async)
 	}
 
 	if len(lfu.elements) >= lfu.capacity {
-		if err := lfu.evictLFU(trackEviction); err != nil {
+		if err := lfu.evictLFU(trackEviction, async); err != nil {
 			return false, err
 		}
 	}
 
-	cached, err := lfu.cache.Set(key, value, toCache)
+	cached, err := lfu.cache.Set(key, value, toCache, async)
 	if err != nil {
 		return false, err
 	}
