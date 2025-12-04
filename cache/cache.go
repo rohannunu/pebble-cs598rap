@@ -93,7 +93,7 @@ func CreateCache(db *pebble.DB, cache_capacity int) *Cache {
 
 func CreateCacheAndPebble(cache_capacity int) *Cache {
 	// creates the cache without a pebble instance (starts one itself)
-	db, err := pebble.Open("demo", &pebble.Options{})
+	db, err := pebble.Open("/tmp/pebble", &pebble.Options{})
 	if err != nil {
 		log.Println("Failed to open pebble database")
 		log.Println(err)

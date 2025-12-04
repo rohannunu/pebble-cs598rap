@@ -22,7 +22,7 @@ func main() {
 		println("Value set in database")
 	}
 
-	retrievedValue, found, err := cache.Get(key, false)
+	retrievedValue, found, err := cache.Get(key)
 
 	if err != nil {
 		panic(err)
