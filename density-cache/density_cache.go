@@ -18,7 +18,7 @@ const (
 	NumAgeBuckets  = 32
 	NumRefClasses  = 4
 	SampleSize     = 5   // how many entries to sample when evicting
-	recomputeEvery = 500 // how often to recompute HD table (in lifetime updates), this is expensive
+	recomputeEvery = 500000 // how often to recompute HD table (in lifetime updates), this is expensive
 )
 
 // stats: hits & lifetimes per (refClass, ageBucket)
