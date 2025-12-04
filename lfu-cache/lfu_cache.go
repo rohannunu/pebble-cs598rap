@@ -92,6 +92,24 @@ func (lfu *LFUCache) incrementFrequency(entry *lfuEntry) {
 	entry.elem = newList.PushFront(entry)
 }
 
+// promoteEntryIfCurrent increments the frequency of the provided entry if it is
+// still the current instance for the key. This helper expects that no locks are
+// held and will take the write lock as needed.
+func (lfu *LFUCache) promoteEntryIfCurrent(key string, snapshot *lfuEntry) {
+	if snapshot == nil {
+		return
+	}
+
+	lfu.mu.Lock()
+	defer lfu.mu.Unlock()
+
+	current, ok := lfu.elements[key]
+	if !ok || current != snapshot {
+		return
+	}
+	lfu.incrementFrequency(current)
+}
+
 func (lfu *LFUCache) recalculateMinFreq() {
 	min := 0
 	for freq, lst := range lfu.freqLists {
@@ -141,22 +159,25 @@ func (lfu *LFUCache) evictLFU(trackStats bool, async bool) error {
 }
 
 func (lfu *LFUCache) Get(key []byte, async bool) ([]byte, bool, error) {
-	lfu.mu.Lock()
-	defer lfu.mu.Unlock()
-
 	keyStr := string(key)
-	if entry, ok := lfu.elements[keyStr]; ok {
+
+	lfu.mu.RLock()
+	entry, ok := lfu.elements[keyStr]
+	if ok {
 		lfu.stats.RecordHit()
 		value, found, err := lfu.cache.Get(key)
+		lfu.mu.RUnlock()
+
 		if err != nil {
 			return nil, false, err
 		}
 		if found {
-			lfu.incrementFrequency(entry)
+			lfu.promoteEntryIfCurrent(keyStr, entry)
 			return value, true, nil
 		}
 		return nil, false, nil
 	}
+	lfu.mu.RUnlock()
 
 	lfu.stats.RecordMiss()
 	value, found, err := lfu.cache.Get(key)
@@ -165,7 +186,9 @@ func (lfu *LFUCache) Get(key []byte, async bool) ([]byte, bool, error) {
 	}
 	if found {
 		lfu.stats.RecordPromote()
+		lfu.mu.Lock()
 		_, err := lfu.setInternal(key, value, true, false, async)
+		lfu.mu.Unlock()
 		if err != nil {
 			return nil, false, err
 		}

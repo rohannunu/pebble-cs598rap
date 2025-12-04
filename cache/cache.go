@@ -3,6 +3,7 @@ package cache
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -17,34 +18,34 @@ import (
 // resources
 
 type Statistics struct {
-	cache_hits     int
-	cache_misses   int
-	cache_accesses int
-	evictions      int
-	prefetches     int
-	additions      int
+	cache_hits     uint64
+	cache_misses   uint64
+	cache_accesses uint64
+	evictions      uint64
+	prefetches     uint64
+	additions      uint64
 }
 
 func (s *Statistics) CacheHit() {
-	s.cache_accesses++
-	s.cache_hits++
+	atomic.AddUint64(&s.cache_accesses, 1)
+	atomic.AddUint64(&s.cache_hits, 1)
 }
 
 func (s *Statistics) CacheMiss() {
-	s.cache_accesses++
-	s.cache_misses++
+	atomic.AddUint64(&s.cache_accesses, 1)
+	atomic.AddUint64(&s.cache_misses, 1)
 }
 
 func (s *Statistics) CacheEvict() {
-	s.evictions++
+	atomic.AddUint64(&s.evictions, 1)
 }
 
 func (s *Statistics) CachePrefetch() {
-	s.prefetches++
+	atomic.AddUint64(&s.prefetches, 1)
 }
 
 func (s *Statistics) CacheAdd() {
-	s.additions++
+	atomic.AddUint64(&s.additions, 1)
 }
 
 type CacheEntry struct {

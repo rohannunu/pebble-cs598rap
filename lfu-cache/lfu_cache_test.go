@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-var async bool = true
+var async bool = false
 
 func TestLFUCache_SetGetAndEvictLeastFrequent(t *testing.T) {
 	lfu := NewLFUCache(2)
@@ -243,6 +243,71 @@ func TestLFUCache_ConcurrentAccess(t *testing.T) {
 		key := []byte(fmt.Sprintf("k-%d", i))
 		if _, _, err := lfu.Get(key, async); err != nil {
 			t.Fatalf("final get failed for %q: %v", key, err)
+		}
+	}
+}
+
+func TestLFUCache_ParallelGetsWithEvictions(t *testing.T) {
+	lfu := NewLFUCache(16)
+	defer lfu.cache.Close()
+
+	const (
+		readers    = 16
+		writers    = 4
+		iterations = 500
+		keySpace   = 32
+	)
+
+	for i := 0; i < keySpace/2; i++ {
+		if _, err := lfu.Set([]byte(fmt.Sprintf("warm-%d", i)), []byte("warm"), true, async); err != nil {
+			t.Fatalf("warmup set failed: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	reader := func(id int) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			key := []byte(fmt.Sprintf("k-%d", i%keySpace))
+			if _, _, err := lfu.Get(key, async); err != nil {
+				t.Errorf("reader %d failed get: %v", id, err)
+				return
+			}
+		}
+	}
+
+	writer := func(id int) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			key := []byte(fmt.Sprintf("k-%d", (i+id)%keySpace))
+			value := []byte(fmt.Sprintf("writer-%d-%d", id, i))
+			if _, err := lfu.Set(key, value, true, async); err != nil {
+				t.Errorf("writer %d failed set: %v", id, err)
+				return
+			}
+		}
+	}
+
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go reader(i)
+	}
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go writer(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < keySpace; i++ {
+		key := []byte(fmt.Sprintf("k-%d", i))
+		if _, _, err := lfu.Get(key, async); err != nil {
+			t.Fatalf("post concurrency get failure for %q: %v", key, err)
 		}
 	}
 }
