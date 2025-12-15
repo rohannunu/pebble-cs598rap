@@ -276,7 +276,7 @@ func (dc *DeToXCache) Set(key, value []byte, toCache bool, async bool) (bool, er
 		}
 		if cached {
 			dc.mu.Lock()
-			dc.stats.RecordHit()
+			//dc.stats.RecordHit()
 			meta.Frequency++
 			meta.LastAccess = atomic.AddUint64(&globalAccess, 1)
 			meta.Size = len(value)
